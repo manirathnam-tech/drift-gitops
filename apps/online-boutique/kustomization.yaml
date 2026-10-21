@@ -1,4 +1,44 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
+
 resources:
   - kubernetes-manifests.yaml
+  - security-resources.yaml
+
+patches:
+  - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: loadgenerator
+    patch: |-
+      $patch: delete
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: loadgenerator
+
+  - target:
+      version: v1
+      kind: ServiceAccount
+      name: loadgenerator
+    patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: loadgenerator
+
+  - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      labelSelector: app
+    path: security-context-patch.yaml
+
+  - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      labelSelector: app in (adservice,cartservice,checkoutservice,currencyservice,emailservice,frontend,paymentservice,productcatalogservice,recommendationservice,shippingservice)
+    path: server-requests-patch.yaml
