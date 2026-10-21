@@ -1,0 +1,13 @@
+This directory contains a modified copy of the Online Boutique Kubernetes
+release manifests.
+
+Upstream project: GoogleCloudPlatform/microservices-demo
+Pinned release: v0.10.7
+Source manifest: release/kubernetes-manifests.yaml
+License: Apache License 2.0; see LICENSE.
+
+This NOTICE is added for this derivative. The upstream v0.10.7 tree did not
+contain a NOTICE file.
+
+Local changes include removing the load generator, adjusting resource
+requests, and adding EKS-focused RBAC, network policies, and security contexts.

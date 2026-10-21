@@ -1,0 +1,73 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: drift-observer
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: drift-observer
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: drift-observer
+subjects:
+  - kind: ServiceAccount
+    name: drift-observer
+    namespace: online-boutique
+roleRef:
+  kind: Role
+  name: drift-observer
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-cartservice-to-redis-cart
+spec:
+  podSelector:
+    matchLabels:
+      app: redis-cart
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: cartservice
+      ports:
+        - protocol: TCP
+          port: 6379
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-callers-to-productcatalogservice
+spec:
+  podSelector:
+    matchLabels:
+      app: productcatalogservice
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: frontend
+        - podSelector:
+            matchLabels:
+              app: checkoutservice
+        - podSelector:
+            matchLabels:
+              app: recommendationservice
+      ports:
+        - protocol: TCP
+          port: 3550
