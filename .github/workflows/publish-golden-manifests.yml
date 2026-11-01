@@ -1,0 +1,78 @@
+name: Publish golden manifests
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: golden-manifests-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Render and publish desired state
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-kubectl@v5.1.0
+        with:
+          version: v1.36.0
+
+      - name: Check rendering tools
+        run: |
+          set -euo pipefail
+          command -v kubectl
+          kubectl version --client
+
+      - name: Render exact commit
+        env:
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/golden/$REVISION"
+          mkdir -p "$output"
+          kubectl kustomize apps/online-boutique > "$output/rendered.yaml"
+          test -s "$output/rendered.yaml"
+          git archive --format=tar.gz "$REVISION" > "$output/source.tar.gz"
+          test -s "$output/source.tar.gz"
+          (
+            cd "$output"
+            sha256sum rendered.yaml source.tar.gz > SHA256SUMS
+          )
+          jq -n \
+            --arg revision "$REVISION" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            '{revision: $revision, repository: $repository, workflow_run_id: $run_id}' \
+            > "$output/metadata.json"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_GOLDEN_PUBLISH_ROLE_ARN }}
+          aws-region: ap-southeast-2
+
+      - name: Upload revision directory
+        env:
+          BUCKET: ${{ vars.GOLDEN_MANIFESTS_BUCKET }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test -n "$BUCKET"
+          aws s3 cp "$RUNNER_TEMP/golden/$REVISION/" \
+            "s3://$BUCKET/golden/$REVISION/" \
+            --recursive --sse AES256 --no-progress
+          uploaded_keys="$(aws s3api list-objects-v2 \
+            --bucket "$BUCKET" \
+            --prefix "golden/$REVISION/" \
+            --query 'Contents[].Key' \
+            --output text)"
+          [[ "$uploaded_keys" == *"golden/$REVISION/rendered.yaml"* ]]
+          [[ "$uploaded_keys" == *"golden/$REVISION/source.tar.gz"* ]]
