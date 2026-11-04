@@ -1,0 +1,86 @@
+name: Severity review gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: severity-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review-gate:
+    name: Severity review gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check approval for high-severity proposals
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const number = context.payload.pull_request?.number;
+            if (!Number.isInteger(number)) {
+              core.setFailed('Pull request number is missing from the event.');
+              return;
+            }
+
+            const { owner, repo } = context.repo;
+            const { data: pr } = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: number,
+            });
+            const labels = (pr.labels || [])
+              .map(label => label.name)
+              .filter(name => /^drift-severity-[0-3]$/.test(name));
+            if (labels.length === 0) {
+              core.notice('This is not a labeled DRIFT proposal; no severity approval is required.');
+              return;
+            }
+            if (labels.length !== 1) {
+              core.setFailed(`Expected exactly one DRIFT severity label; found ${labels.length}.`);
+              return;
+            }
+
+            const severity = Number(labels[0].slice('drift-severity-'.length));
+            if (severity < 2) {
+              core.notice(`Severity ${severity} does not require human approval.`);
+              return;
+            }
+            if (pr.draft) {
+              core.setFailed(`Severity ${severity} requires approval before the proposal can pass the review gate.`);
+              return;
+            }
+
+            const reviews = await github.paginate(github.rest.pulls.listReviews, {
+              owner,
+              repo,
+              pull_number: number,
+              per_page: 100,
+            });
+            const latestByReviewer = new Map();
+            for (const review of reviews) {
+              const user = review.user;
+              if (!user?.login || user.type === 'Bot' || user.login === pr.user.login) continue;
+              if (review.commit_id !== pr.head.sha) continue;
+              const previous = latestByReviewer.get(user.login);
+              if (!previous || Date.parse(review.submitted_at || '') >= Date.parse(previous.submitted_at || '')) {
+                latestByReviewer.set(user.login, review);
+              }
+            }
+
+            const currentReviews = [...latestByReviewer.values()];
+            if (currentReviews.some(review => review.state === 'CHANGES_REQUESTED')) {
+              core.setFailed('A reviewer requested changes on the current PR revision.');
+              return;
+            }
+            if (!currentReviews.some(review => review.state === 'APPROVED')) {
+              core.setFailed(`Severity ${severity} needs an approval from another human on the current PR revision.`);
+              return;
+            }
+            core.notice(`Severity ${severity} has a current human approval.`);
