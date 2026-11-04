@@ -24,10 +24,13 @@ AWS keys.
 `Validate remediation proposal` runs on pull request events with read-only
 permissions. It checks out the proposed GitOps revision, renders
 `apps/online-boutique`, and runs the shared DRIFT kubeconform, Conftest, and
-Checkov validators. The per-check JSON report is retained as a GitHub Actions
-artifact for 14 days. The workflow does not use AWS credentials or change
-repository content. Generated DRIFT patches are restricted to application
-manifest paths, so they cannot edit the validation workflow.
+Checkov validators. Checkov results are compared with the rendered PR base so
+existing Online Boutique findings are reported but do not block a proposal;
+new check/resource findings fail the gate. The per-check JSON report is
+retained as a GitHub Actions artifact for 14 days. The workflow does not use
+AWS credentials or change repository content. Generated DRIFT patches are
+restricted to application manifest paths, so they cannot edit the validation
+workflow.
 
 Before treating this check as a merge gate, configure the `main` branch rules
 to require the `Validate rendered GitOps state` check. Use the `drift-severity-0`

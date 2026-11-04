@@ -29,6 +29,12 @@ jobs:
           repository: manirathnam-tech/drift-remediation-
           path: .drift-remediation
 
+      - name: Check out PR base revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: .gitops-base
+
       - name: Set up kubectl
         uses: azure/setup-kubectl@v5.1.0
         with:
@@ -67,13 +73,17 @@ jobs:
           set -euo pipefail
           kubectl kustomize apps/online-boutique > "$RUNNER_TEMP/rendered.yaml"
           test -s "$RUNNER_TEMP/rendered.yaml"
+          kubectl kustomize .gitops-base/apps/online-boutique > "$RUNNER_TEMP/base-rendered.yaml"
+          test -s "$RUNNER_TEMP/base-rendered.yaml"
 
       - name: Run schema, policy, and security checks
         run: |
           set -euo pipefail
-          python .drift-remediation/infra/validator/src/validate_manifest.py \
-            "$RUNNER_TEMP/rendered.yaml" \
-            --json-report "$RUNNER_TEMP/validation-results.json"
+          python .github/scripts/validate_rendered.py \
+            --baseline "$RUNNER_TEMP/base-rendered.yaml" \
+            --candidate "$RUNNER_TEMP/rendered.yaml" \
+            --policy .drift-remediation/infra/validator/policy \
+            --report "$RUNNER_TEMP/validation-results.json"
 
       - name: Upload validation report
         if: always()
