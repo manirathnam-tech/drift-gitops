@@ -1,0 +1,92 @@
+name: Severity merge policy
+
+on:
+  workflow_run:
+    workflows: [Validate remediation proposal, Severity review gate]
+    types: [completed]
+
+permissions:
+  checks: read
+  contents: write
+  pull-requests: write
+
+jobs:
+  low-severity-auto-merge:
+    name: Enable low-severity auto-merge
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      vars.DRIFT_ENABLE_LOW_SEVERITY_AUTOMERGE == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Apply severity policy to the validated pull request
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const associated = run.pull_requests || [];
+            if (associated.length !== 1) {
+              core.notice(`Expected one associated PR; found ${associated.length}. No merge policy action taken.`);
+              return;
+            }
+
+            const { owner, repo } = context.repo;
+            const candidate = associated[0];
+            const { data: pr } = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: candidate.number,
+            });
+
+            if (pr.state !== 'open' || pr.draft || pr.base.ref !== 'main') {
+              core.notice('PR is closed, draft, or does not target main. No merge policy action taken.');
+              return;
+            }
+            if (pr.head.repo?.full_name !== `${owner}/${repo}` || !pr.head.ref.startsWith('drift/')) {
+              core.notice('PR is not a same-repository DRIFT proposal. No merge policy action taken.');
+              return;
+            }
+
+            const severityLabels = (pr.labels || [])
+              .map(label => label.name)
+              .filter(name => /^drift-severity-[0-3]$/.test(name));
+            if (severityLabels.length !== 1) {
+              core.setFailed(`Expected exactly one severity label; found ${severityLabels.length}.`);
+              return;
+            }
+            const severity = Number(severityLabels[0].slice('drift-severity-'.length));
+            if (severity >= 2) {
+              core.notice(`Severity ${severity} requires human approval under main branch rules.`);
+              return;
+            }
+
+            const { data: checkRuns } = await github.rest.checks.listForRef({
+              owner,
+              repo,
+              ref: pr.head.sha,
+              per_page: 100,
+            });
+            for (const requiredName of ['Validate rendered GitOps state', 'Severity review gate']) {
+              const successfulRuns = checkRuns.check_runs.filter(check =>
+                check.name === requiredName &&
+                check.head_sha === pr.head.sha &&
+                check.status === 'completed' &&
+                check.conclusion === 'success'
+              );
+              if (successfulRuns.length !== 1) {
+                core.setFailed(`Expected one successful '${requiredName}' check for ${pr.head.sha}; found ${successfulRuns.length}.`);
+                return;
+              }
+            }
+
+            const result = await github.graphql(
+              `mutation EnableAutoMerge($pullRequestId: ID!) {
+                enablePullRequestAutoMerge(input: {
+                  pullRequestId: $pullRequestId,
+                  mergeMethod: SQUASH
+                }) {
+                  pullRequest { number autoMergeRequest { enabledAt } }
+                }
+              }`,
+              { pullRequestId: pr.node_id }
+            );
+            core.notice(`Auto-merge enabled for severity ${severity} PR #${result.enablePullRequestAutoMerge.pullRequest.number}. GitHub branch rules still gate the merge.`);

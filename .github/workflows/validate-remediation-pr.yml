@@ -1,0 +1,85 @@
+name: Validate remediation proposal
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: remediation-validation-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate rendered GitOps state
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out proposed GitOps revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Check out DRIFT validators
+        uses: actions/checkout@v4
+        with:
+          repository: manirathnam-tech/drift-remediation-
+          path: .drift-remediation
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v5.1.0
+        with:
+          version: v1.36.5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned static validators
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends curl ca-certificates
+
+          kubeconform_version=v0.8.0
+          curl --fail --silent --show-error --location \
+            "https://github.com/yannh/kubeconform/releases/download/${kubeconform_version}/kubeconform-linux-amd64.tar.gz" \
+            --output /tmp/kubeconform.tar.gz
+          echo "9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883  /tmp/kubeconform.tar.gz" | sha256sum --check
+          sudo tar -xzf /tmp/kubeconform.tar.gz -C /usr/local/bin kubeconform
+
+          conftest_version=0.71.1
+          curl --fail --silent --show-error --location \
+            "https://github.com/open-policy-agent/conftest/releases/download/v${conftest_version}/conftest_${conftest_version}_Linux_x86_64.tar.gz" \
+            --output /tmp/conftest.tar.gz
+          echo "c3f6b2a753bd56e377a1e51a95ae3e057f926f2e9139f7d5b5dfbbaf810f7985  /tmp/conftest.tar.gz" | sha256sum --check
+          sudo tar -xzf /tmp/conftest.tar.gz -C /usr/local/bin conftest
+
+          python -m pip install --disable-pip-version-check checkov==3.4.0
+
+      - name: Render proposed application
+        run: |
+          set -euo pipefail
+          kubectl kustomize apps/online-boutique > "$RUNNER_TEMP/rendered.yaml"
+          test -s "$RUNNER_TEMP/rendered.yaml"
+
+      - name: Run schema, policy, and security checks
+        run: |
+          set -euo pipefail
+          python .drift-remediation/infra/validator/src/validate_manifest.py \
+            "$RUNNER_TEMP/rendered.yaml" \
+            --json-report "$RUNNER_TEMP/validation-results.json"
+
+      - name: Upload validation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: remediation-validation-${{ github.event.pull_request.number }}
+          path: ${{ runner.temp }}/validation-results.json
+          if-no-files-found: warn
+          retention-days: 14
